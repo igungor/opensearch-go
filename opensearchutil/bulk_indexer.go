@@ -261,10 +261,14 @@ func (bi *bulkIndexer) Close(ctx context.Context) error {
 		bi.wg.Wait()
 	}
 
+	var firstError error
 	for _, w := range bi.workers {
 		w.mu.Lock()
 		if w.buf.Len() > 0 {
 			if err := w.flush(ctx); err != nil {
+				if firstError == nil {
+					firstError = err
+				}
 				w.mu.Unlock()
 				if bi.config.OnError != nil {
 					bi.config.OnError(ctx, err)
@@ -274,7 +278,7 @@ func (bi *bulkIndexer) Close(ctx context.Context) error {
 		}
 		w.mu.Unlock()
 	}
-	return nil
+	return firstError
 }
 
 // Stats returns indexer statistics.
@@ -302,7 +306,7 @@ func (bi *bulkIndexer) init() {
 			id:  i,
 			ch:  bi.queue,
 			bi:  bi,
-			buf: bytes.NewBuffer(make([]byte, 0, bi.config.FlushBytes)),
+			buf: &bytes.Buffer{},
 			aux: make([]byte, 0, 512)}
 		w.run()
 		bi.workers = append(bi.workers, &w)
@@ -387,7 +391,7 @@ func (w *worker) run() {
 			}
 
 			w.items = append(w.items, item)
-			if w.buf.Len() >= w.bi.config.FlushBytes {
+			if w.bi.config.FlushBytes > 0 && w.buf.Len() >= w.bi.config.FlushBytes {
 				if err := w.flush(ctx); err != nil {
 					w.mu.Unlock()
 					if w.bi.config.OnError != nil {
