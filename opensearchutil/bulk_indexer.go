@@ -96,14 +96,15 @@ type BulkIndexerConfig struct {
 // BulkIndexerStats represents the indexer statistics.
 //
 type BulkIndexerStats struct {
-	NumAdded    uint64
-	NumFlushed  uint64
-	NumFailed   uint64
-	NumIndexed  uint64
-	NumCreated  uint64
-	NumUpdated  uint64
-	NumDeleted  uint64
-	NumRequests uint64
+	NumAdded       uint64
+	NumFlushed     uint64
+	NumFailed      uint64
+	NumIndexed     uint64
+	NumCreated     uint64
+	NumUpdated     uint64
+	NumDeleted     uint64
+	NumRequests    uint64
+	BufSizeFlushed uint64
 }
 
 // BulkIndexerItem represents an indexer item.
@@ -212,14 +213,15 @@ type bulkIndexer struct {
 }
 
 type bulkIndexerStats struct {
-	numAdded    uint64
-	numFlushed  uint64
-	numFailed   uint64
-	numIndexed  uint64
-	numCreated  uint64
-	numUpdated  uint64
-	numDeleted  uint64
-	numRequests uint64
+	numAdded       uint64
+	numFlushed     uint64
+	numFailed      uint64
+	numIndexed     uint64
+	numCreated     uint64
+	numUpdated     uint64
+	numDeleted     uint64
+	numRequests    uint64
+	bufSizeFlushed uint64
 }
 
 // NewBulkIndexer creates a new bulk indexer.
@@ -317,14 +319,15 @@ func (bi *bulkIndexer) Close(ctx context.Context) error {
 //
 func (bi *bulkIndexer) Stats() BulkIndexerStats {
 	return BulkIndexerStats{
-		NumAdded:    atomic.LoadUint64(&bi.stats.numAdded),
-		NumFlushed:  atomic.LoadUint64(&bi.stats.numFlushed),
-		NumFailed:   atomic.LoadUint64(&bi.stats.numFailed),
-		NumIndexed:  atomic.LoadUint64(&bi.stats.numIndexed),
-		NumCreated:  atomic.LoadUint64(&bi.stats.numCreated),
-		NumUpdated:  atomic.LoadUint64(&bi.stats.numUpdated),
-		NumDeleted:  atomic.LoadUint64(&bi.stats.numDeleted),
-		NumRequests: atomic.LoadUint64(&bi.stats.numRequests),
+		NumAdded:       atomic.LoadUint64(&bi.stats.numAdded),
+		NumFlushed:     atomic.LoadUint64(&bi.stats.numFlushed),
+		NumFailed:      atomic.LoadUint64(&bi.stats.numFailed),
+		NumIndexed:     atomic.LoadUint64(&bi.stats.numIndexed),
+		NumCreated:     atomic.LoadUint64(&bi.stats.numCreated),
+		NumUpdated:     atomic.LoadUint64(&bi.stats.numUpdated),
+		NumDeleted:     atomic.LoadUint64(&bi.stats.numDeleted),
+		NumRequests:    atomic.LoadUint64(&bi.stats.numRequests),
+		BufSizeFlushed: atomic.LoadUint64(&bi.stats.bufSizeFlushed),
 	}
 }
 
@@ -580,6 +583,8 @@ func (w *worker) flush(ctx context.Context) error {
 		}
 		return fmt.Errorf("flush: error parsing response body: %s", err)
 	}
+
+	atomic.AddUint64(&w.bi.stats.bufSizeFlushed, uint64(w.buf.Len()))
 
 	for i, blkItem := range blk.Items {
 		var (
