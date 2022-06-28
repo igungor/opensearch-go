@@ -96,14 +96,15 @@ type BulkIndexerConfig struct {
 // BulkIndexerStats represents the indexer statistics.
 //
 type BulkIndexerStats struct {
-	NumAdded    uint64
-	NumFlushed  uint64
-	NumFailed   uint64
-	NumIndexed  uint64
-	NumCreated  uint64
-	NumUpdated  uint64
-	NumDeleted  uint64
-	NumRequests uint64
+	NumAdded       uint64
+	NumFlushed     uint64
+	NumFailed      uint64
+	NumIndexed     uint64
+	NumCreated     uint64
+	NumUpdated     uint64
+	NumDeleted     uint64
+	NumRequests    uint64
+	BufSizeFlushed uint64
 }
 
 // BulkIndexerItem represents an indexer item.
@@ -138,6 +139,7 @@ type bulkActionMetadata struct {
 	WaitForActiveShards interface{} `json:"wait_for_active_shards,omitempty"`
 	Refresh             *string     `json:"refresh,omitempty"`
 	RequireAlias        *bool       `json:"require_alias,omitempty"`
+	RetryOnConflict     *int        `json:"retry_on_conflict,omitempty"`
 }
 
 // BulkIndexerResponse represents the OpenSearch response.
@@ -211,14 +213,15 @@ type bulkIndexer struct {
 }
 
 type bulkIndexerStats struct {
-	numAdded    uint64
-	numFlushed  uint64
-	numFailed   uint64
-	numIndexed  uint64
-	numCreated  uint64
-	numUpdated  uint64
-	numDeleted  uint64
-	numRequests uint64
+	numAdded       uint64
+	numFlushed     uint64
+	numFailed      uint64
+	numIndexed     uint64
+	numCreated     uint64
+	numUpdated     uint64
+	numDeleted     uint64
+	numRequests    uint64
+	bufSizeFlushed uint64
 }
 
 // NewBulkIndexer creates a new bulk indexer.
@@ -292,10 +295,14 @@ func (bi *bulkIndexer) Close(ctx context.Context) error {
 		bi.wg.Wait()
 	}
 
+	var firstError error
 	for _, w := range bi.workers {
 		w.mu.Lock()
 		if w.buf.Len() > 0 {
 			if err := w.flush(ctx); err != nil {
+				if firstError == nil {
+					firstError = err
+				}
 				w.mu.Unlock()
 				if bi.config.OnError != nil {
 					bi.config.OnError(ctx, err)
@@ -305,21 +312,22 @@ func (bi *bulkIndexer) Close(ctx context.Context) error {
 		}
 		w.mu.Unlock()
 	}
-	return nil
+	return firstError
 }
 
 // Stats returns indexer statistics.
 //
 func (bi *bulkIndexer) Stats() BulkIndexerStats {
 	return BulkIndexerStats{
-		NumAdded:    atomic.LoadUint64(&bi.stats.numAdded),
-		NumFlushed:  atomic.LoadUint64(&bi.stats.numFlushed),
-		NumFailed:   atomic.LoadUint64(&bi.stats.numFailed),
-		NumIndexed:  atomic.LoadUint64(&bi.stats.numIndexed),
-		NumCreated:  atomic.LoadUint64(&bi.stats.numCreated),
-		NumUpdated:  atomic.LoadUint64(&bi.stats.numUpdated),
-		NumDeleted:  atomic.LoadUint64(&bi.stats.numDeleted),
-		NumRequests: atomic.LoadUint64(&bi.stats.numRequests),
+		NumAdded:       atomic.LoadUint64(&bi.stats.numAdded),
+		NumFlushed:     atomic.LoadUint64(&bi.stats.numFlushed),
+		NumFailed:      atomic.LoadUint64(&bi.stats.numFailed),
+		NumIndexed:     atomic.LoadUint64(&bi.stats.numIndexed),
+		NumCreated:     atomic.LoadUint64(&bi.stats.numCreated),
+		NumUpdated:     atomic.LoadUint64(&bi.stats.numUpdated),
+		NumDeleted:     atomic.LoadUint64(&bi.stats.numDeleted),
+		NumRequests:    atomic.LoadUint64(&bi.stats.numRequests),
+		BufSizeFlushed: atomic.LoadUint64(&bi.stats.bufSizeFlushed),
 	}
 }
 
@@ -333,7 +341,7 @@ func (bi *bulkIndexer) init() {
 			id:  i,
 			ch:  bi.queue,
 			bi:  bi,
-			buf: bytes.NewBuffer(make([]byte, 0, bi.config.FlushBytes)),
+			buf: &bytes.Buffer{},
 			aux: make([]byte, 0, 512)}
 		w.run()
 		bi.workers = append(bi.workers, &w)
@@ -418,7 +426,7 @@ func (w *worker) run() {
 			}
 
 			w.items = append(w.items, item)
-			if w.buf.Len() >= w.bi.config.FlushBytes {
+			if w.bi.config.FlushBytes > 0 && w.buf.Len() >= w.bi.config.FlushBytes {
 				if err := w.flush(ctx); err != nil {
 					w.mu.Unlock()
 					if w.bi.config.OnError != nil {
@@ -447,6 +455,7 @@ func (w *worker) writeMeta(item BulkIndexerItem) error {
 		WaitForActiveShards: item.WaitForActiveShards,
 		Refresh:             item.Refresh,
 		RequireAlias:        item.RequireAlias,
+		RetryOnConflict:     item.RetryOnConflict,
 	}
 	// Can not specify version or seq num if no document ID is passed
 	if meta.DocumentID == "" {
@@ -574,6 +583,8 @@ func (w *worker) flush(ctx context.Context) error {
 		}
 		return fmt.Errorf("flush: error parsing response body: %s", err)
 	}
+
+	atomic.AddUint64(&w.bi.stats.bufSizeFlushed, uint64(w.buf.Len()))
 
 	for i, blkItem := range blk.Items {
 		var (

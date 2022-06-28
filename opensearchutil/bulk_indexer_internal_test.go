@@ -262,7 +262,9 @@ func TestBulkIndexer(t *testing.T) {
 			t.Fatalf("Unexpected error: %s", err)
 		}
 
-		bi.Close(context.Background())
+		if err := bi.Close(context.Background()); err == nil {
+			t.Fatalf("Expected error on Close but got nil")
+		}
 
 		if indexerError == nil {
 			t.Errorf("Expected indexerError to not be nil")
